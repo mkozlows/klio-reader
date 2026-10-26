@@ -20,6 +20,17 @@ Built with GTK 4, libadwaita, and WebKitGTK. Book rendering is handled by
 - Remembers where you left off in each book
 - Open a book by double-clicking it, with File › Open (Ctrl+O), or by dragging it onto the window
 
+## Installing
+
+On Fedora, from [COPR](https://copr.fedorainfracloud.org/coprs/mkozlows/klio-reader/):
+
+```sh
+sudo dnf copr enable mkozlows/klio-reader
+sudo dnf install klio-reader
+```
+
+`dnf upgrade` picks up new versions.
+
 ## Running from source
 
 Requires `gjs`, GTK 4, libadwaita ≥ 1.8, and WebKitGTK 6.0
@@ -32,7 +43,7 @@ git submodule update --init
 
 Set `READER_DEBUG=1` to enable the WebKit inspector (right-click › Inspect Element).
 
-## Installing
+## Installing from source
 
 Requires `meson` (on Fedora: `sudo dnf install meson`). To install just for
 yourself, with no `sudo`:
@@ -55,6 +66,20 @@ Or as a Flatpak:
 ```sh
 flatpak-builder --user --install --force-clean _flatpak org.klio.Reader.json
 ```
+
+## Releasing
+
+```sh
+./release.sh 0.2.0 "What changed"
+```
+
+This bumps the version, tags it, publishes a GitHub release with the
+`meson dist` tarball, and starts the COPR build. It needs `meson`, `gh`, and
+`copr-cli`, all logged in. Run it with `DRY_RUN=1` first to build and test the
+tarball without publishing anything.
+
+Release from the `meson dist` tarball, not GitHub's automatic source archives:
+those leave out the foliate-js submodule.
 
 ## How it fits together
 
