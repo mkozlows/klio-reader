@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="pages" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#deddda"/>
+      <stop offset="0.5" stop-color="#f6f5f4"/>
+      <stop offset="1" stop-color="#deddda"/>
+    </linearGradient>
+    <linearGradient id="cover" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3584e4"/>
+      <stop offset="1" stop-color="#1c71d8"/>
+    </linearGradient>
+  </defs>
+  <!-- back cover / thickness -->
+  <rect x="18" y="16" width="92" height="100" rx="8" fill="#1a5fb4"/>
+  <!-- page block -->
+  <rect x="24" y="96" width="82" height="14" rx="3" fill="url(#pages)"/>
+  <path d="M27 100h76M27 103h76M27 106h76" stroke="#c0bfbc" stroke-width="1"/>
+  <!-- front cover -->
+  <rect x="18" y="12" width="92" height="88" rx="8" fill="url(#cover)"/>
+  <rect x="18" y="12" width="10" height="88" rx="4" fill="#1a5fb4" opacity=".55"/>
+  <!-- title plate -->
+  <rect x="42" y="32" width="52" height="26" rx="4" fill="#ffffff" opacity=".92"/>
+  <rect x="50" y="40" width="36" height="3" rx="1.5" fill="#1c71d8" opacity=".75"/>
+  <rect x="56" y="47" width="24" height="3" rx="1.5" fill="#1c71d8" opacity=".5"/>
+  <!-- ribbon -->
+  <path d="M88 12h10v36l-5-5-5 5z" fill="#e01b24"/>
+  <path d="M88 12h10v4h-10z" fill="#a51d2d"/>
+</svg>

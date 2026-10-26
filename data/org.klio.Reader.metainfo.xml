@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.klio.Reader</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <name>Klio Reader</name>
+  <summary>Read EPUB books</summary>
+  <description>
+    <p>
+      A simple e-book viewer. Open an EPUB file and read it — there's no
+      library to manage.
+    </p>
+    <ul>
+      <li>Paginated layout, one page at a time</li>
+      <li>Optional continuous scrolling</li>
+      <li>Table of contents sidebar</li>
+      <li>Footnotes shown in popups</li>
+      <li>Find text anywhere in the book</li>
+      <li>Adjustable text size, with optional overrides for the book’s font, font size, and alignment</li>
+      <li>Light and dark styles</li>
+      <li>Remembers where you left off in each book</li>
+    </ul>
+  </description>
+  <url type="homepage">https://github.com/mkozlows/klio-reader</url>
+  <url type="bugtracker">https://github.com/mkozlows/klio-reader/issues</url>
+  <url type="vcs-browser">https://github.com/mkozlows/klio-reader</url>
+  <launchable type="desktop-id">org.klio.Reader.desktop</launchable>
+  <developer id="org.klio">
+    <name>Mike Kozlowski</name>
+  </developer>
+  <provides>
+    <mediatype>application/epub+zip</mediatype>
+  </provides>
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+    <control>touch</control>
+  </supports>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-10-26"/>
+  </releases>
+</component>

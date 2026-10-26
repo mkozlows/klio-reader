@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Klio Reader
+Comment=Read EPUB books
+Keywords=ebook;epub;book;reader;viewer;
+Exec=org.klio.Reader %U
+Icon=org.klio.Reader
+Terminal=false
+Type=Application
+Categories=GTK;GNOME;Office;Viewer;
+MimeType=application/epub+zip;
+StartupNotify=true

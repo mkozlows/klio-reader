@@ -1,0 +1,81 @@
+/* Colors are set from GTK (see `setAppearance` in reader.js) */
+:root {
+    --bg: #ffffff;
+    --fg: #1e1e1e;
+    --border: color-mix(in srgb, var(--fg) 15%, transparent);
+    --hover: color-mix(in srgb, var(--fg) 7%, transparent);
+    --active: color-mix(in srgb, var(--fg) 14%, transparent);
+    height: 100%;
+}
+
+body {
+    margin: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--fg);
+    font: menu;
+    -webkit-user-select: none;
+}
+
+foliate-view {
+    display: block;
+    height: 100%;
+}
+
+foliate-view::part(head),
+foliate-view::part(foot) {
+    font: menu;
+    font-size: 9pt;
+    font-variant-numeric: tabular-nums;
+}
+
+#footnote {
+    width: min(420px, calc(100vw - 48px));
+    height: min(360px, calc(100vh - 48px));
+    padding: 0;
+    border: 0;
+    border-radius: 15px;
+    box-shadow: 0 0 0 1px var(--border), 0 4px 24px rgba(0, 0, 0, .25);
+    background: var(--bg);
+    color: var(--fg);
+    overflow: hidden;
+}
+#footnote[open] {
+    display: flex;
+    flex-direction: column;
+}
+#footnote::backdrop {
+    background: rgba(0, 0, 0, .3);
+}
+#footnote header {
+    padding: 12px;
+    text-align: center;
+    font-weight: bold;
+    cursor: default;
+}
+#footnote main {
+    flex: 1;
+    min-height: 0;
+}
+#footnote form {
+    display: flex;
+    gap: 6px;
+    padding: 12px;
+}
+#footnote button {
+    flex: 1;
+    padding: 8px 12px;
+    border: 0;
+    border-radius: 9px;
+    font: inherit;
+    font-weight: bold;
+    color: inherit;
+    background: var(--hover);
+}
+#footnote button:hover {
+    background: var(--active);
+}
+#footnote button:focus-visible {
+    outline: 2px solid var(--link);
+    outline-offset: 1px;
+}
