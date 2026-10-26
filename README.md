@@ -71,3 +71,7 @@ flatpak-builder --user --install --force-clean _flatpak org.klio.Reader.json
 
 The reader page's Content-Security-Policy blocks scripts in book content.
 Links to websites open in the default browser.
+
+## License
+
+GPL-3.0-or-later; see [LICENSE](LICENSE). foliate-js is MIT-licensed.

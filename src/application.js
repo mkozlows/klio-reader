@@ -252,6 +252,9 @@ export const Application = GObject.registerClass({
             version: VERSION,
             developer_name: 'Mike Kozlowski',
             comments: 'A simple e-book viewer',
+            license_type: Gtk.License.GPL_3_0,
+            website: 'https://github.com/mkozlows/klio-reader',
+            issue_url: 'https://github.com/mkozlows/klio-reader/issues',
         })
         dialog.add_legal_section('foliate-js', 'Copyright © 2022 John Factotum',
             Gtk.License.MIT_X11, null)
