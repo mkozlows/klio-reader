@@ -16,6 +16,8 @@ BuildRequires:  meson
 BuildRequires:  gjs
 BuildRequires:  desktop-file-utils
 BuildRequires:  appstream
+# meson.build looks up the icon cache tool, though it doesn't run it here
+BuildRequires:  /usr/bin/gtk4-update-icon-cache
 
 # The app loads these through GObject introspection, so rpm can't detect them
 Requires:       gjs
