@@ -1,7 +1,7 @@
 %global app_id org.klio.Reader
 
 Name:           klio-reader
-Version:        0.3.1
+Version:        0.3.2
 Release:        1%{?dist}
 Summary:        Simple EPUB viewer for GNOME
 
@@ -58,6 +58,9 @@ adjustable text, light and dark styles, and remembers where you left off.
 %{_datadir}/icons/hicolor/symbolic/apps/%{app_id}-symbolic.svg
 
 %changelog
+* Tue Oct 27 2026 Mike Kozlowski <mlk@klio.org> - 0.3.2-1
+- Image viewer: double-click an image or right-click › View Image; Back after a chapter change returns to the link; touchscreens can scroll past chapter breaks
+
 * Mon Oct 26 2026 Mike Kozlowski <mlk@klio.org> - 0.3.1-1
 - In dark mode, black-and-white line art (ornaments, maps, drawings) is recolored to match the page
 
