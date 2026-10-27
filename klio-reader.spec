@@ -1,7 +1,7 @@
 %global app_id org.klio.Reader
 
 Name:           klio-reader
-Version:        0.2.0
+Version:        0.3.0
 Release:        1%{?dist}
 Summary:        Simple EPUB viewer for GNOME
 
@@ -58,6 +58,9 @@ adjustable text, light and dark styles, and remembers where you left off.
 %{_datadir}/icons/hicolor/symbolic/apps/%{app_id}-symbolic.svg
 
 %changelog
+* Mon Oct 26 2026 Mike Kozlowski <mlk@klio.org> - 0.3.0-1
+- Smoother chapter changes in continuous scrolling; images fit the window; default font; rounded share images; book links can only open web and email addresses
+
 * Mon Oct 26 2026 Mike Kozlowski <mlk@klio.org> - 0.2.0-1
 - Copy Share Image; footnotes in more books; fonts installed while running; ignore drags inside a book
 
