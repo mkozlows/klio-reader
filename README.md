@@ -14,6 +14,7 @@ Built with GTK 4, libadwaita, and WebKitGTK. Book rendering is handled by
 - Images fit in the window, so covers and full-page illustrations show whole
 - Table of contents sidebar (F9) that follows your position
 - Footnotes open in a popup
+- Double-click an image (or right-click it › View Image) to see it on its own: fitted to the window, zoomable with the mouse wheel, pinching, or + and −, and draggable. Esc, Back, or the close button returns to the book.
 - Right-click a selection › Copy Share Image: the passage as a quote image in your default font, with the author and title
 - Find in the whole book (Ctrl+F, then Enter / Shift+Enter or Ctrl+G / Ctrl+Shift+G)
 - Text size (Ctrl+plus / Ctrl+minus / Ctrl+0, or Ctrl+scroll); line length scales with it
@@ -111,6 +112,7 @@ those leave out the foliate-js submodule.
 | `src/window.js` | The window: header bar, contents sidebar, empty/error states, keyboard handling |
 | `src/book-view.js` | `WebKit.WebView` subclass. Serves the reader page, foliate-js, and the book over a private `reader://` URI scheme, and bridges calls between GTK and the page |
 | `src/reader/` | The page inside the WebView. Wraps foliate-js and applies the book stylesheet (colors, justification, hyphenation) |
+| `src/image-view.js` | The zoomable view of a single image |
 | `src/share-image.js` | Renders selected text as a quote image for the clipboard |
 | `src/preferences.js` | Preferences dialog: the default font, and overrides for the book's font, font size, and alignment |
 | `src/toc-view.js` | Table of contents tree (`Gtk.ListView` + `Gtk.TreeListModel`) |

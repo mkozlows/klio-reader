@@ -47,6 +47,9 @@ const PIXELS_PER_NOTCH = 70 // as PIXELS_PER_WHEEL_STEP in book-view.js
 const SCROLL_GAP_MS = 250
 // After moving to another chapter, scrolling is ignored for this long
 const CHAPTER_CHANGE_PAUSE_MS = 400
+// A touch has to move this far, in pixels, before it counts as scrolling, so
+// a tap doesn't turn the page
+const TOUCH_SLOP = 16
 
 // Find: every match is highlighted; the current one in a stronger color
 const SEARCH_HIGHLIGHT = '#f6d32d'
@@ -301,6 +304,17 @@ const blockDragging = doc => {
 }
 blockDragging(document)
 
+// Double-clicking an image (an <img>, or an SVG <image>, as on some covers)
+// views it in GTK
+const viewImagesOnDoubleClick = doc => doc.addEventListener('dblclick', e => {
+    const el = e.target.closest?.('img, image')
+    const src = el?.localName === 'img' ? el.currentSrc || el.src
+        : el?.href?.baseVal ? new URL(el.href.baseVal, doc.baseURI).href : null
+    if (!src) return
+    e.preventDefault()
+    post({ type: 'view-image', uri: src })
+})
+
 // Whether this web process can render a font family: text in it measures
 // differently from text in the fallback, for at least one of two fallbacks
 const hasFont = family => {
@@ -533,6 +547,12 @@ class Reader {
             return
         }
         await (dir > 0 ? this.view.next(distance) : this.view.prev(distance))
+        // Keep Back accurate: foliate-js updates the place in the history
+        // when the reader scrolls, but not when a turn moves to another
+        // section, so a link followed from there would go back to wherever
+        // the reader last scrolled
+        const cfi = this.view.lastLocation?.cfi
+        if (cfi) this.view.history.replaceState(cfi)
     }
 
     // The next (dir 1) or previous (-1) section in reading order, if any
@@ -597,6 +617,30 @@ class Reader {
         } finally {
             setTimeout(() => this.#overscrollLocked = false, CHAPTER_CHANGE_PAUSE_MS)
         }
+    }
+
+    // A touchscreen scrolls the book itself, with no scroll events for GTK to
+    // pass on, so scrolling by touch is followed here. Each touch is a new
+    // scroll.
+    #followTouches(doc) {
+        let start = null
+        let last = null
+        doc.addEventListener('touchstart', e => {
+            start = e.touches.length === 1 ? e.touches[0].screenY : null
+            last = start
+            this.#scrollStart = performance.now()
+            debug(`touch: ${e.touches.length} finger(s) down`)
+        }, { passive: true })
+        doc.addEventListener('touchmove', e => {
+            if (start === null || e.touches.length !== 1) return
+            const y = e.touches[0].screenY
+            if (Math.abs(y - start) < TOUCH_SLOP) return
+            const delta = last - y
+            last = y
+            if (delta) this.overscroll(delta)
+        }, { passive: true })
+        for (const type of ['touchend', 'touchcancel'])
+            doc.addEventListener(type, () => start = null)
     }
 
     // Show in GTK how far into the runout the reader has scrolled
@@ -725,6 +769,8 @@ class Reader {
             markAlignable(detail.doc)
             markLineArt(detail.doc)
             blockDragging(detail.doc)
+            viewImagesOnDoubleClick(detail.doc)
+            this.#followTouches(detail.doc)
         })
         view.addEventListener('relocate', ({ detail }) => {
             const { fraction, tocItem, cfi } = detail
@@ -778,6 +824,7 @@ class Reader {
             noteView.addEventListener('load', ({ detail }) => {
                 blockDragging(detail.doc)
                 markLineArt(detail.doc)
+                viewImagesOnDoubleClick(detail.doc)
             })
             noteView.addEventListener('link', e => {
                 e.preventDefault()
@@ -807,6 +854,23 @@ class Reader {
     }
 
     // Paragraphs of the selected text in the book or a footnote popup, if any
+    // The image at `uri` (from the book or a footnote popup), as base64, and
+    // whether it's line art
+    async getImage(uri) {
+        const blob = await (await fetch(uri)).blob()
+        const data = await new Promise((resolve, reject) => {
+            const reader = new FileReader()
+            reader.onload = () => resolve(reader.result.slice(reader.result.indexOf(',') + 1))
+            reader.onerror = () => reject(reader.error)
+            reader.readAsDataURL(blob)
+        })
+        const views = [this.view, dialog.open ? dialog.querySelector('foliate-view') : null]
+        const lineArt = views.some(view => view?.renderer.getContents().some(({ doc }) =>
+            [...doc.images].some(img => (img.currentSrc === uri || img.src === uri)
+                && img.hasAttribute(LINE_ART))))
+        return { data, lineArt }
+    }
+
     getSelection() {
         const views = [this.view, dialog.open ? dialog.querySelector('foliate-view') : null]
         for (const view of views)
@@ -851,6 +915,7 @@ globalThis.api = {
     hasFont,
     debugState: () => reader.debugState(),
     getSelection: () => reader.getSelection(),
+    getImage: uri => reader.getImage(uri),
     open: (url, layout) => reader.open(url, layout),
     display: lastLocation => reader.display(lastLocation),
     setAppearance: appearance => reader.setAppearance(appearance),
