@@ -22,7 +22,7 @@ const load = () => {
 }
 
 const data = Object.assign({ textScale: 1, scrolled: false, colorScheme: 'default',
-    customFont: false, fontFamily: 'Serif', overrideFontSize: false, textAlign: 'publisher', width: 900, height: 1000, maximized: false, books: {} }, load())
+    defaultFont: 'Serif', customFont: false, fontFamily: 'Serif', overrideFontSize: false, textAlign: 'publisher', width: 900, height: 1000, maximized: false, books: {} }, load())
 let saveSource = 0
 
 const saveNow = () => {

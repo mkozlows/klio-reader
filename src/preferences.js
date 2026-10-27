@@ -11,14 +11,38 @@ const ALIGNMENTS = [
     ['start', 'Left'],
 ]
 
-// Settings for overriding the book's own styles. Changes apply immediately
-// through `application.setTextStyle()`.
+// The default font, and settings for overriding the book's own styles.
+// Changes apply immediately through `application.setTextStyle()`.
 export const PreferencesDialog = GObject.registerClass({
     GTypeName: 'ReaderPreferencesDialog',
 }, class PreferencesDialog extends Adw.PreferencesDialog {
     constructor(application) {
         super({ search_enabled: false })
         const set = changes => application.setTextStyle(changes)
+        const makeFontButton = (key, title) => {
+            const button = new Gtk.FontDialogButton({
+                dialog: new Gtk.FontDialog({ title }),
+                level: Gtk.FontLevel.FAMILY,
+                use_font: true,
+                valign: Gtk.Align.CENTER,
+                font_desc: Pango.FontDescription.from_string(state.get(key)),
+            })
+            button.connect('notify::font-desc', () => {
+                const family = button.font_desc?.get_family()
+                if (family) set({ [key]: family })
+            })
+            return button
+        }
+
+        const defaults = new Adw.PreferencesGroup()
+        const defaultFontButton = makeFontButton('defaultFont', 'Choose Default Font')
+        const defaultFont = new Adw.ActionRow({
+            title: 'Default Font',
+            subtitle: 'For text the book doesn’t choose a font for. Also used for share images.',
+            activatable_widget: defaultFontButton,
+        })
+        defaultFont.add_suffix(defaultFontButton)
+        defaults.add(defaultFont)
 
         const group = new Adw.PreferencesGroup({
             title: 'Book Styles',
@@ -34,17 +58,7 @@ export const PreferencesDialog = GObject.registerClass({
         })
         font.connect('notify::enable-expansion', () =>
             set({ customFont: font.enable_expansion }))
-        const fontButton = new Gtk.FontDialogButton({
-            dialog: new Gtk.FontDialog({ title: 'Choose Font' }),
-            level: Gtk.FontLevel.FAMILY,
-            use_font: true,
-            valign: Gtk.Align.CENTER,
-            font_desc: Pango.FontDescription.from_string(state.get('fontFamily')),
-        })
-        fontButton.connect('notify::font-desc', () => {
-            const family = fontButton.font_desc?.get_family()
-            if (family) set({ fontFamily: family })
-        })
+        const fontButton = makeFontButton('fontFamily', 'Choose Font')
         const fontRow = new Adw.ActionRow({ title: 'Font', activatable_widget: fontButton })
         fontRow.add_suffix(fontButton)
         font.add_row(fontRow)
@@ -68,6 +82,7 @@ export const PreferencesDialog = GObject.registerClass({
         group.add(align)
 
         const page = new Adw.PreferencesPage()
+        page.add(defaults)
         page.add(group)
         this.add(page)
     }

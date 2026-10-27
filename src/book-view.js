@@ -6,6 +6,7 @@ import Gtk from 'gi://Gtk?version=4.0'
 import WebKit from 'gi://WebKit?version=6.0'
 
 import { MODULE_DIR } from './config.js'
+import { DEBUG, debug, summarize } from './log.js'
 
 Gio._promisify(WebKit.WebView.prototype, 'call_async_javascript_function')
 Gio._promisify(Gio.File.prototype, 'read_async')
@@ -67,6 +68,10 @@ const launchUri = uri => new Gtk.UriLauncher({ uri }).launch(null, null, null)
 // Overscroll is measured in pixels; one notch of a mouse wheel counts as this
 const PIXELS_PER_WHEEL_STEP = 70
 
+// Calls made on every scroll event, logged only if they're slow
+const SCROLL_CALLS = new Set(['overscroll', 'scrollBy'])
+const SLOW_CALL_MS = 500
+
 // Calls `f` right away, then ignores calls until there's a `ms` pause
 const leadingDebounce = (f, ms) => {
     let source = 0
@@ -91,12 +96,18 @@ export const BookView = GObject.registerClass({
         'search-changed': { param_types: [GObject.TYPE_JSOBJECT] },
         // "Copy Share Image" chosen: the selected paragraphs, as strings
         'share-selection': { param_types: [GObject.TYPE_JSOBJECT] },
+        // Scrolled mode, scrolling past the end of a chapter: { fraction, label }.
+        // fraction is how far it is to moving on to the next chapter, 0 when
+        // not past the end; label is the next chapter's title, or ''.
+        'pull': { param_types: [GObject.TYPE_JSOBJECT] },
     },
 }, class BookView extends WebKit.WebView {
     file = null
     #pageReady = null
     #dialogOpen = false
     #displayed = false // a book is loaded and showing
+    #calls = new Map() // calls into the page not yet finished: id → { name, start }
+    #lastCallId = 0
     #layout = {
         scrolled: false, textScale: 1,
         font: null, overrideSize: false, align: 'publisher',
@@ -106,13 +117,14 @@ export const BookView = GObject.registerClass({
         registerScheme()
         super({
             settings: new WebKit.Settings({
-                enable_developer_extras: Boolean(GLib.getenv('READER_DEBUG')),
+                enable_developer_extras: DEBUG,
                 enable_write_console_messages_to_stdout: true,
                 enable_back_forward_navigation_gestures: false,
                 enable_html5_database: false,
                 enable_html5_local_storage: false,
                 enable_smooth_scrolling: false,
-                // WebKitGTK defaults to sans-serif; books expect serif
+                // WebKitGTK defaults to sans-serif; books expect serif. See
+                // also `setLayout()`.
                 default_font_family: 'serif',
             }),
             vexpand: true,
@@ -128,6 +140,9 @@ export const BookView = GObject.registerClass({
             }
         })
         manager.register_script_message_handler('reader', null)
+        if (DEBUG) manager.add_script(new WebKit.UserScript(
+            'globalThis.readerDebug = true', WebKit.UserContentInjectedFrames.TOP_FRAME,
+            WebKit.UserScriptInjectionTime.START, null, null))
 
         this.connect('decide-policy', (_, decision, type) => this.#decidePolicy(decision, type))
         const shareAction = new Gio.SimpleAction({ name: 'share-selection' })
@@ -182,13 +197,17 @@ export const BookView = GObject.registerClass({
     // Any of:
     //   scrolled: scrolled (true) or paginated (false) layout
     //   textScale: text size relative to the default
+    //   defaultFont: font family for text the book doesn't set a font for, or
+    //     sets only to serif
     //   font: font family to use instead of the book's, or null
     //   overrideSize: show body text at the default size, whatever the book says
     //   align: 'publisher', 'justify', or 'start'
     setLayout(layout) {
         Object.assign(this.#layout, layout)
-        const { textScale } = this.#layout
+        const { textScale, defaultFont } = this.#layout
         const settings = this.get_settings()
+        settings.default_font_family = defaultFont ?? 'serif'
+        settings.serif_font_family = defaultFont ?? 'serif'
         settings.default_font_size = Math.round(16 * textScale)
         settings.default_monospace_font_size = Math.round(13 * textScale)
         this.#call('setLayout', this.#layout).catch(() => {})
@@ -208,6 +227,7 @@ export const BookView = GObject.registerClass({
     // Start a new web process, which will see fonts installed since the
     // current one started. Reopen the book afterwards.
     restartWebProcess() {
+        debug('restarting the web process')
         this.#displayed = false
         this.terminate_web_process()
     }
@@ -240,15 +260,46 @@ export const BookView = GObject.registerClass({
     forward() { return this.#do('forward') }
 
     async #call(name, ...args) {
-        const body = `const result = await globalThis.api[name](...JSON.parse(args))
-            return JSON.stringify(result ?? null)`
-        const params = new GLib.Variant('a{sv}', {
-            name: new GLib.Variant('s', name),
-            args: new GLib.Variant('s', JSON.stringify(args)),
-        })
-        const value = await this.call_async_javascript_function(
-            body, -1, params, null, null, null)
-        return JSON.parse(value.to_string())
+        const id = ++this.#lastCallId
+        const start = Date.now()
+        const quiet = SCROLL_CALLS.has(name)
+        if (!quiet) debug(`call ${id}: ${name}(${summarize(args).slice(1, -1)})`)
+        this.#calls.set(id, { name, start })
+        try {
+            const body = `const result = await globalThis.api[name](...JSON.parse(args))
+                return JSON.stringify(result ?? null)`
+            const params = new GLib.Variant('a{sv}', {
+                name: new GLib.Variant('s', name),
+                args: new GLib.Variant('s', JSON.stringify(args)),
+            })
+            const value = await this.call_async_javascript_function(
+                body, -1, params, null, null, null)
+            return JSON.parse(value.to_string())
+        } catch (e) {
+            debug(`call ${id}: ${name} failed: ${e.message}`)
+            throw e
+        } finally {
+            this.#calls.delete(id)
+            const ms = Date.now() - start
+            if (!quiet || ms > SLOW_CALL_MS) debug(`call ${id}: ${name} done in ${ms} ms`)
+        }
+    }
+
+    // Log what the view and the page are doing, for when something's stuck
+    async logState() {
+        const now = Date.now()
+        const calls = [...this.#calls].map(([id, { name, start }]) =>
+            `${id} ${name} (${now - start} ms)`)
+        console.log(`State: displayed ${this.#displayed}, popup open ${this.#dialogOpen}, `
+            + `unfinished calls: ${calls.join(', ') || 'none'}`)
+        const timeout = new Promise((_, reject) => GLib.timeout_add(GLib.PRIORITY_DEFAULT, 2000,
+            () => (reject(new Error('no answer in 2 s')), GLib.SOURCE_REMOVE)))
+        try {
+            console.log(`Page state: ${JSON.stringify(
+                await Promise.race([this.#call('debugState'), timeout]))}`)
+        } catch (e) {
+            console.log(`Page state: ${e.message}`)
+        }
     }
 
     async #shareSelection() {
@@ -261,12 +312,16 @@ export const BookView = GObject.registerClass({
     }
 
     #do(name, ...args) {
-        if (!this.#displayed || this.#dialogOpen) return false
+        if (!this.#displayed || this.#dialogOpen) {
+            debug(`${name} ignored: ${this.#displayed ? 'popup open' : 'no book showing'}`)
+            return false
+        }
         this.#call(name, ...args).catch(e => console.error(e))
         return true
     }
 
     #onMessage(message) {
+        if (message.type !== 'search') debug(`message: ${summarize(message)}`)
         switch (message.type) {
             case 'ready':
                 this.#pageReady?.()
@@ -277,6 +332,9 @@ export const BookView = GObject.registerClass({
                 break
             case 'search':
                 this.emit('search-changed', message)
+                break
+            case 'pull':
+                this.emit('pull', message)
                 break
             case 'history':
                 this.emit('history-changed', message.canGoBack, message.canGoForward)
@@ -317,7 +375,10 @@ export const BookView = GObject.registerClass({
         })
         controller.connect('scroll-begin', () => discrete = false)
         controller.connect('scroll', (_, dx, dy) => {
-            if (this.#dialogOpen) return false
+            if (this.#dialogOpen) {
+                debug('scroll ignored: popup open')
+                return false
+            }
             if (this.#layout.scrolled) {
                 const delta = controller.get_unit() === Gdk.ScrollUnit.WHEEL
                     ? dy * PIXELS_PER_WHEEL_STEP : dy
