@@ -1,6 +1,7 @@
 import GLib from 'gi://GLib?version=2.0'
 import Gdk from 'gi://Gdk?version=4.0'
 import Graphene from 'gi://Graphene?version=1.0'
+import Gsk from 'gi://Gsk?version=4.0'
 import Gtk from 'gi://Gtk?version=4.0'
 import Pango from 'gi://Pango?version=1.0'
 import PangoCairo from 'gi://PangoCairo?version=1.0'
@@ -9,6 +10,7 @@ import PangoCairo from 'gi://PangoCairo?version=1.0'
 const WIDTH = 1080
 const PADDING = 96
 const SCALE = 2
+const CORNER_RADIUS = 32
 const MAX_CHARS = 1500
 
 const BLACK = new Gdk.RGBA({ red: 0, green: 0, blue: 0, alpha: 1 })
@@ -55,8 +57,9 @@ const makeLayout = (context, { family, size, style = Pango.Style.NORMAL, width, 
     return layout
 }
 
-// Render a passage as a quote on a white card, with the book's author and
-// title underneath. Returns a Gdk.Texture.
+// Render a passage as a quote on a white card with rounded corners (outside
+// them, the image is transparent), with the book's author and title
+// underneath. Returns a Gdk.Texture.
 //   paragraphs: the passage's paragraphs, as plain text
 //   font: font family for the text
 export const renderQuoteImage = (renderer, { paragraphs, title, author, font }) => {
@@ -100,7 +103,9 @@ export const renderQuoteImage = (renderer, { paragraphs, title, author, font }) 
     const height = Math.ceil(y)
     const snapshot = new Gtk.Snapshot()
     snapshot.scale(SCALE, SCALE)
-    snapshot.append_color(WHITE, new Graphene.Rect().init(0, 0, WIDTH, height))
+    const card = new Graphene.Rect().init(0, 0, WIDTH, height)
+    snapshot.push_rounded_clip(new Gsk.RoundedRect().init_from_rect(card, CORNER_RADIUS))
+    snapshot.append_color(WHITE, card)
 
     // Quotation marks in the margins: the opening one level with the first
     // line, the closing one with the last
@@ -126,6 +131,7 @@ export const renderQuoteImage = (renderer, { paragraphs, title, author, font }) 
         snapshot.append_layout(layout, BLACK)
         snapshot.restore()
     }
+    snapshot.pop()
     const node = snapshot.to_node()
     return renderer.render_texture(node,
         new Graphene.Rect().init(0, 0, WIDTH * SCALE, height * SCALE))

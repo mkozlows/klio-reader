@@ -63,7 +63,16 @@ const registerScheme = () => {
     })
 }
 
-const launchUri = uri => new Gtk.UriLauncher({ uri }).launch(null, null, null)
+// Open a link from the book in another app. Only web and email links: any
+// other URI would open whatever handles its scheme (file://, smb://, ...).
+const EXTERNAL_SCHEMES = ['http', 'https', 'mailto']
+const launchUri = uri => {
+    if (!EXTERNAL_SCHEMES.includes(GLib.Uri.peek_scheme(uri)?.toLowerCase())) {
+        debug(`not opening ${uri}: not a web or email link`)
+        return
+    }
+    new Gtk.UriLauncher({ uri }).launch(null, null, null)
+}
 
 // Overscroll is measured in pixels; one notch of a mouse wheel counts as this
 const PIXELS_PER_WHEEL_STEP = 70
@@ -351,12 +360,14 @@ export const BookView = GObject.registerClass({
     #decidePolicy(decision, type) {
         const { NAVIGATION_ACTION, NEW_WINDOW_ACTION } = WebKit.PolicyDecisionType
         if (type !== NAVIGATION_ACTION && type !== NEW_WINDOW_ACTION) return false
-        const uri = decision.get_navigation_action().get_request().get_uri()
+        const action = decision.get_navigation_action()
+        const uri = action.get_request().get_uri()
         const scheme = GLib.Uri.peek_scheme(uri)
         if (type === NAVIGATION_ACTION && [SCHEME, 'blob', 'about'].includes(scheme))
             return false
         decision.ignore()
-        if (['http', 'https', 'mailto'].includes(scheme)) launchUri(uri)
+        // Only for a click, not, say, something in the book loading a frame
+        if (action.is_user_gesture()) launchUri(uri)
         return true
     }
 
