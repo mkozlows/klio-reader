@@ -9,6 +9,7 @@ install_data(
   'toc-view.js',
   'state.js',
   'preferences.js',
+  'share-image.js',
   install_dir: pkgdatadir,
 )
 
