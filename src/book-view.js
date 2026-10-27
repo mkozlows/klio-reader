@@ -89,6 +89,8 @@ export const BookView = GObject.registerClass({
         'zoom': { param_types: [GObject.TYPE_INT] },
         // { current, total, done }: current is -1 when there's no match
         'search-changed': { param_types: [GObject.TYPE_JSOBJECT] },
+        // "Copy Share Image" chosen: the selected paragraphs, as strings
+        'share-selection': { param_types: [GObject.TYPE_JSOBJECT] },
     },
 }, class BookView extends WebKit.WebView {
     file = null
@@ -128,15 +130,22 @@ export const BookView = GObject.registerClass({
         manager.register_script_message_handler('reader', null)
 
         this.connect('decide-policy', (_, decision, type) => this.#decidePolicy(decision, type))
-        this.connect('context-menu', (_, menu) => {
+        const shareAction = new Gio.SimpleAction({ name: 'share-selection' })
+        shareAction.connect('activate', () => this.#shareSelection())
+        this.connect('context-menu', (_, menu, hit) => {
             // Copy is the only browser action that makes sense in a book
             for (const item of menu.get_items())
                 if (item.get_stock_action() !== WebKit.ContextMenuAction.COPY)
                     menu.remove(item)
+            if (hit.context_is_selection() && this.#displayed)
+                menu.append(WebKit.ContextMenuItem.new_from_gaction(
+                    shareAction, 'Copy Share Image', null))
             return menu.get_n_items() === 0
         })
-        this.connect('web-process-terminated', (_, reason) =>
-            console.error(`Web process terminated (${reason})`))
+        this.connect('web-process-terminated', (_, reason) => {
+            if (reason !== WebKit.WebProcessTerminationReason.TERMINATED_BY_API)
+                console.error(`Web process terminated (${reason})`)
+        })
 
         this.#setupScrolling()
         this.#setupZoom()
@@ -190,6 +199,19 @@ export const BookView = GObject.registerClass({
         this.#displayed = true
     }
 
+    // Whether the page can render a font family. WebKit's web process reads
+    // the list of installed fonts only when it starts.
+    async hasFont(family) {
+        return this.#call('hasFont', family)
+    }
+
+    // Start a new web process, which will see fonts installed since the
+    // current one started. Reopen the book afterwards.
+    restartWebProcess() {
+        this.#displayed = false
+        this.terminate_web_process()
+    }
+
     setAppearance(appearance) {
         return this.#call('setAppearance', appearance).catch(() => {})
     }
@@ -227,6 +249,15 @@ export const BookView = GObject.registerClass({
         const value = await this.call_async_javascript_function(
             body, -1, params, null, null, null)
         return JSON.parse(value.to_string())
+    }
+
+    async #shareSelection() {
+        try {
+            const paragraphs = await this.#call('getSelection')
+            if (paragraphs.length) this.emit('share-selection', paragraphs)
+        } catch (e) {
+            console.error(e)
+        }
     }
 
     #do(name, ...args) {

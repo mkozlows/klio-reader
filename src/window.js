@@ -9,6 +9,7 @@ import Adw from 'gi://Adw?version=1'
 import { APP_ID, APP_NAME } from './config.js'
 import { BookView } from './book-view.js'
 import { TocView } from './toc-view.js'
+import { renderQuoteImage } from './share-image.js'
 import { state } from './state.js'
 
 Gio._promisify(Gtk.FileDialog.prototype, 'open', 'open_finish')
@@ -132,6 +133,8 @@ export const ReaderWindow = GObject.registerClass({
 }, class ReaderWindow extends Adw.ApplicationWindow {
     file = null
     #bookKey = null
+    #book = null // { title, author } of the book showing
+    #font = null // the custom font last applied, if any
     #bookView = new BookView()
     #tocView = new TocView()
     #title = new Adw.WindowTitle({ title: APP_NAME })
@@ -192,6 +195,7 @@ export const ReaderWindow = GObject.registerClass({
             if (this.#bookView.scrolled && !this.#spinner.visible)
                 this.#showProgress(tocLabel ? `${tocLabel} · ${progress}` : progress)
         })
+        this.#bookView.connect('share-selection', (_, paragraphs) => this.#copyShareImage(paragraphs))
         this.connect('destroy', () => this.#hideProgress())
         this.#bookView.connect('zoom', (_, dir) =>
             this.application.setTextScale(this.application.textScale + dir * 0.1))
@@ -456,8 +460,33 @@ export const ReaderWindow = GObject.registerClass({
 
     #updateAppearance = () => {}
 
-    setTextStyle(style) {
+    // Put an image of the passage, set as a quote, on the clipboard
+    #copyShareImage(paragraphs) {
+        const texture = renderQuoteImage(this.get_renderer(), {
+            paragraphs,
+            title: this.#book?.title ?? '',
+            author: this.#book?.author ?? '',
+            font: this.#font ?? 'Serif',
+        })
+        // Offered as PNG data. Offering the texture itself leaves it to GTK to
+        // convert, and it can't convert the GPU texture the renderer makes.
+        this.get_clipboard().set_content(
+            Gdk.ContentProvider.new_for_bytes('image/png', texture.save_to_png_bytes()))
+        this.#toastOverlay.add_toast(new Adw.Toast({ title: 'Image copied', timeout: 2 }))
+    }
+
+    async setTextStyle(style) {
+        const fontChanged = style.font !== this.#font
+        this.#font = style.font
         this.#bookView.setLayout(style)
+        // A font installed while the app is running is new to the book's web
+        // process, which then needs replacing
+        if (!fontChanged || !style.font || !this.#bookKey) return
+        const file = this.file
+        const hasFont = await this.#bookView.hasFont(style.font).catch(() => true)
+        if (hasFont || this.file !== file || this.#font !== style.font) return
+        this.#bookView.restartWebProcess()
+        this.openFile(file)
     }
 
     setScrolled(scrolled) {
@@ -493,6 +522,8 @@ export const ReaderWindow = GObject.registerClass({
         // capture phase, so drops on the book don't go to WebKit
         target.propagation_phase = Gtk.PropagationPhase.CAPTURE
         target.connect('drop', (_, file) => {
+            // ignore drags from inside the book, like an image being dragged
+            if (target.current_drop.get_drag()) return false
             this.openFile(file)
             return true
         })
@@ -511,6 +542,7 @@ export const ReaderWindow = GObject.registerClass({
     async openFile(file) {
         this.file = file
         this.#bookKey = null
+        this.#book = null
         for (const name of BOOK_ACTIONS) this.lookup_action(name).enabled = false
         this.#splitView.show_sidebar = false
         this.#searchBar.search_mode_enabled = false
@@ -524,6 +556,7 @@ export const ReaderWindow = GObject.registerClass({
             const book = await this.#bookView.open(file)
             if (this.file !== file) return
             this.#bookKey = book.identifier ? `id:${book.identifier}` : `uri:${file.get_uri()}`
+            this.#book = { title: book.title, author: book.author }
             if (book.title) {
                 this.#title.title = book.title
                 this.title = book.title

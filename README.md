@@ -13,6 +13,7 @@ Built with GTK 4, libadwaita, and WebKitGTK. Book rendering is handled by
 - Or continuous scrolling (Ctrl+M): keep scrolling past the end of a chapter to go on to the next one
 - Table of contents sidebar (F9) that follows your position
 - Footnotes open in a popup
+- Right-click a selection › Copy Share Image: the passage as a quote image, with the author and title
 - Find in the whole book (Ctrl+F, then Enter / Shift+Enter or Ctrl+G / Ctrl+Shift+G)
 - Text size (Ctrl+plus / Ctrl+minus / Ctrl+0, or Ctrl+scroll); line length scales with it
 - Preferences (Ctrl+,) to override the book's font, font size, and text alignment
@@ -89,6 +90,7 @@ those leave out the foliate-js submodule.
 | `src/window.js` | The window: header bar, contents sidebar, empty/error states, keyboard handling |
 | `src/book-view.js` | `WebKit.WebView` subclass. Serves the reader page, foliate-js, and the book over a private `reader://` URI scheme, and bridges calls between GTK and the page |
 | `src/reader/` | The page inside the WebView. Wraps foliate-js and applies the book stylesheet (colors, justification, hyphenation) |
+| `src/share-image.js` | Renders selected text as a quote image for the clipboard |
 | `src/preferences.js` | Preferences dialog: overrides for the book's font, font size, and alignment |
 | `src/toc-view.js` | Table of contents tree (`Gtk.ListView` + `Gtk.TreeListModel`) |
 | `src/state.js` | Window size, text size, and reading positions, saved to `$XDG_STATE_HOME/org.klio.Reader/state.json` |

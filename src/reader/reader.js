@@ -157,6 +157,76 @@ const markAlignable = doc => {
             el.setAttribute(ALIGNABLE, '')
 }
 
+// Dragging an image or link out of a book is no use (it carries a URL that
+// only means something here), and dropping anything on the page would make
+// WebKit navigate to it. Dragging selected text still works.
+const blockDragging = doc => {
+    doc.addEventListener('dragstart', e => {
+        if (e.target.nodeType !== Node.TEXT_NODE) e.preventDefault()
+    })
+    doc.addEventListener('dragover', e => e.preventDefault())
+    doc.addEventListener('drop', e => e.preventDefault())
+}
+blockDragging(document)
+
+// Whether this web process can render a font family: text in it measures
+// differently from text in the fallback, for at least one of two fallbacks
+const hasFont = family => {
+    const context = document.createElement('canvas').getContext('2d')
+    const measure = font => {
+        context.font = `40px ${font}`
+        return context.measureText('Handgloves 0123456789').width
+    }
+    return ['serif', 'monospace'].some(fallback =>
+        measure(`${JSON.stringify(family)}, ${fallback}`) !== measure(fallback))
+}
+
+// The selected text as a list of paragraphs, without footnote references
+const BLOCK_ELEMENTS = new Set(['address', 'article', 'aside', 'blockquote', 'dd',
+    'div', 'dl', 'dt', 'figcaption', 'figure', 'footer', 'h1', 'h2', 'h3', 'h4',
+    'h5', 'h6', 'header', 'hr', 'li', 'ol', 'p', 'pre', 'section', 'table', 'tr', 'ul'])
+const NOTE_REF = 'data-reader-noteref'
+
+// After foliate-js's footnotes.js: marked as a reference, or superscript
+const isSuperscript = el => el?.localName === 'sup' || (el?.nodeType === Node.ELEMENT_NODE
+    && /^(super|top|text-top)$/.test(el.ownerDocument.defaultView.getComputedStyle(el).verticalAlign))
+// The superscript a link sits in or holds, if it's nothing but the link. Goes
+// further than foliate-js, for e.g. <sup><small><a>1</a></small></sup>.
+const getSuperscript = a => {
+    const text = a.textContent.trim()
+    const onlyLink = el => el?.nodeType === Node.ELEMENT_NODE && el.textContent.trim() === text
+    for (let el = a; onlyLink(el); el = el.parentElement)
+        if (isSuperscript(el)) return el
+    for (let el = a.firstElementChild; onlyLink(el); el = el.firstElementChild)
+        if (isSuperscript(el)) return el
+    return null
+}
+const isMarkedNoteRef = a => /\b(doc-)?(noteref|biblioref|glossref)\b/.test(
+    `${a.getAttributeNS('http://www.idpf.org/2007/ops', 'type')} ${a.getAttribute('role')}`)
+const isNoteRef = a =>
+    isMarkedNoteRef(a) || getSuperscript(a) !== null || isSuperscript(a.parentElement)
+
+const getText = node => [...node.childNodes].map(child => {
+    if (child.nodeType === Node.TEXT_NODE) return child.data
+    if (child.nodeType !== Node.ELEMENT_NODE || child.hasAttribute(NOTE_REF)) return ''
+    if (child.localName === 'br') return '\n'
+    const text = getText(child)
+    return BLOCK_ELEMENTS.has(child.localName) ? `\n${text}\n` : text
+}).join('')
+
+const getSelectedParagraphs = (doc, range) => {
+    const refs = [...doc.querySelectorAll('a[href]')]
+        .filter(a => range.intersectsNode(a) && isNoteRef(a))
+    for (const a of refs) a.setAttribute(NOTE_REF, '')
+    const contents = range.cloneContents()
+    for (const a of refs) a.removeAttribute(NOTE_REF)
+    return getText(contents)
+        .replaceAll('\u00ad', '')
+        .split('\n')
+        .map(line => line.replace(/\s+/g, ' ').trim())
+        .filter(Boolean)
+}
+
 const dialog = document.getElementById('footnote')
 
 class Reader {
@@ -378,7 +448,10 @@ class Reader {
 
     #handleEvents() {
         const { view } = this
-        view.addEventListener('load', ({ detail }) => markAlignable(detail.doc))
+        view.addEventListener('load', ({ detail }) => {
+            markAlignable(detail.doc)
+            blockDragging(detail.doc)
+        })
         view.addEventListener('relocate', ({ detail }) => {
             const { fraction, tocItem, cfi } = detail
             const { heads, feet } = view.renderer
@@ -400,11 +473,19 @@ class Reader {
             e.preventDefault()
             post({ type: 'external-link', href: e.detail.href_ })
         })
-        view.addEventListener('link', e =>
-            this.#footnotes.handle(view.book, e)?.catch(err => {
+        view.addEventListener('link', e => {
+            // Hand foliate-js the superscript around the link, which it might
+            // not find itself
+            const { a, href } = e.detail
+            const sup = isMarkedNoteRef(a) ? null : getSuperscript(a)
+            const event = sup && sup !== a
+                ? { detail: { a: sup, href }, preventDefault: () => e.preventDefault() }
+                : e
+            this.#footnotes.handle(view.book, event)?.catch(err => {
                 console.warn(err)
-                view.goTo(e.detail.href)
-            }))
+                view.goTo(href)
+            })
+        })
         view.addEventListener('draw-annotation', ({ detail }) => {
             if (detail.annotation.searchCurrent) detail.draw(drawCurrentMatch)
         })
@@ -419,6 +500,7 @@ class Reader {
 
         this.#footnotes.addEventListener('before-render', ({ detail }) => {
             const { view: noteView } = detail
+            noteView.addEventListener('load', ({ detail }) => blockDragging(detail.doc))
             noteView.addEventListener('link', e => {
                 e.preventDefault()
                 dialog.close()
@@ -445,6 +527,18 @@ class Reader {
         })
     }
 
+    // Paragraphs of the selected text in the book or a footnote popup, if any
+    getSelection() {
+        const views = [this.view, dialog.open ? dialog.querySelector('foliate-view') : null]
+        for (const view of views)
+            for (const { doc } of view?.renderer?.getContents() ?? []) {
+                const selection = doc.getSelection()
+                if (selection?.rangeCount && !selection.isCollapsed)
+                    return getSelectedParagraphs(doc, selection.getRangeAt(0))
+            }
+        return []
+    }
+
     onDialogClose() {
         post({ type: 'dialog', open: false })
         const noteView = dialog.querySelector('foliate-view')
@@ -461,6 +555,8 @@ dialog.addEventListener('close', () => reader.onDialogClose())
 dialog.addEventListener('click', e => e.target === dialog ? dialog.close() : null)
 
 globalThis.api = {
+    hasFont,
+    getSelection: () => reader.getSelection(),
     open: (url, layout) => reader.open(url, layout),
     display: lastLocation => reader.display(lastLocation),
     setAppearance: appearance => reader.setAppearance(appearance),
