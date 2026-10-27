@@ -18,7 +18,7 @@ Built with GTK 4, libadwaita, and WebKitGTK. Book rendering is handled by
 - Find in the whole book (Ctrl+F, then Enter / Shift+Enter or Ctrl+G / Ctrl+Shift+G)
 - Text size (Ctrl+plus / Ctrl+minus / Ctrl+0, or Ctrl+scroll); line length scales with it
 - Preferences (Ctrl+,): a default font for text the book doesn't choose a font for, and overrides for the book's font, font size, and text alignment
-- Light, dark, or follow-the-system style, picked from the main menu; links use the system accent color
+- Light, dark, or follow-the-system style, picked from the main menu; links use the system accent color, and in dark mode black-and-white line art (ornaments, maps, drawings) is recolored to match
 - Remembers where you left off in each book
 - Open a book by double-clicking it, with File › Open (Ctrl+O), or by dragging it onto the window
 

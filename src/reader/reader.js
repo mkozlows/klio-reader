@@ -151,6 +151,10 @@ const getCSS = ({ dark, bg, fg, link }, { font, overrideSize, align, textScale, 
         color: ${fg} !important;
         background: none !important;
     }
+    img[${LINE_ART}] {
+        background: none !important;
+        ${lineArtFilter(grayLevel(bg), grayLevel(fg))}
+    }
     body * {
         color: inherit !important;
         border-color: currentColor !important;
@@ -210,6 +214,62 @@ const fixViewportUnits = doc => {
     }
     for (const el of doc.querySelectorAll('[style*="vh"]')) fixStyle(el.style)
 }
+
+// Line art: black-and-white images of dark ink on light paper or on a
+// transparent background, like ornaments, maps, and pen drawings. In dark
+// mode they're recolored, the paper to the background color and the ink to
+// the text color, so they don't show as glaring white boxes, or as black on
+// near-black. Photos, which have more shades of gray, are left alone.
+const LINE_ART = 'data-reader-line-art'
+const LINE_ART_SAMPLE_SIZE = 128
+const isLineArt = async img => {
+    try {
+        await img.decode()
+        const scale = Math.min(1, LINE_ART_SAMPLE_SIZE / Math.max(img.naturalWidth, img.naturalHeight))
+        const width = Math.max(1, Math.round(img.naturalWidth * scale))
+        const height = Math.max(1, Math.round(img.naturalHeight * scale))
+        const canvas = document.createElement('canvas')
+        canvas.width = width
+        canvas.height = height
+        const context = canvas.getContext('2d', { willReadFrequently: true })
+        // nearest neighbor, so thin lines stay ink rather than turning gray
+        context.imageSmoothingEnabled = false
+        context.drawImage(img, 0, 0, width, height)
+        const data = context.getImageData(0, 0, width, height).data
+        let visible = 0, colored = 0, light = 0, mid = 0
+        for (let i = 0; i < data.length; i += 4) {
+            const [r, g, b, a] = data.subarray(i, i + 4)
+            if (a < 32) continue
+            visible++
+            if (Math.max(r, g, b) - Math.min(r, g, b) > 32) colored++
+            const level = (r + g + b) / 3
+            if (level > 200) light++
+            else if (level >= 56) mid++
+        }
+        const transparent = width * height - visible
+        if (!visible || colored > visible * 0.03 || mid > visible * 0.25) return false
+        // on a transparent background, mostly dark ink; otherwise, mostly
+        // light paper
+        return transparent > width * height * 0.05
+            ? light < visible / 2
+            : light > visible / 2
+    } catch {
+        return false
+    }
+}
+const markLineArt = doc => {
+    for (const img of doc.images)
+        isLineArt(img).then(yes => yes && img.setAttribute(LINE_ART, ''))
+}
+
+// The gray level of a color like #1d1d20, from 0 to 1
+const grayLevel = color => [1, 3, 5]
+    .reduce((sum, i) => sum + parseInt(color.slice(i, i + 2), 16), 0) / 765
+
+// Maps white to `paper` and black to `ink` (gray levels, from 0 to 1), and
+// shades between to shades between
+const lineArtFilter = (paper, ink) =>
+    `filter: invert(${ink / (ink + paper)}) brightness(${ink + paper}) !important;`
 
 // Calibre's cover pages stretch the cover to fill an SVG the size of the page,
 // which distorts it when the page isn't the cover's shape. Fit it instead.
@@ -663,6 +723,7 @@ class Reader {
                 this.#showPull()
             })
             markAlignable(detail.doc)
+            markLineArt(detail.doc)
             blockDragging(detail.doc)
         })
         view.addEventListener('relocate', ({ detail }) => {
@@ -714,7 +775,10 @@ class Reader {
 
         this.#footnotes.addEventListener('before-render', ({ detail }) => {
             const { view: noteView } = detail
-            noteView.addEventListener('load', ({ detail }) => blockDragging(detail.doc))
+            noteView.addEventListener('load', ({ detail }) => {
+                blockDragging(detail.doc)
+                markLineArt(detail.doc)
+            })
             noteView.addEventListener('link', e => {
                 e.preventDefault()
                 dialog.close()
