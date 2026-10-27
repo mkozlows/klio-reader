@@ -105,6 +105,9 @@ export const BookView = GObject.registerClass({
         'search-changed': { param_types: [GObject.TYPE_JSOBJECT] },
         // "Copy Share Image" chosen: the selected paragraphs, as strings
         'share-selection': { param_types: [GObject.TYPE_JSOBJECT] },
+        // An image double-clicked, or "View Image" chosen: the image's URI,
+        // for `getImage()`
+        'view-image': { param_types: [GObject.TYPE_STRING] },
         // Scrolled mode, scrolling past the end of a chapter: { fraction, label }.
         // fraction is how far it is to moving on to the next chapter, 0 when
         // not past the end; label is the next chapter's title, or ''.
@@ -156,6 +159,11 @@ export const BookView = GObject.registerClass({
         this.connect('decide-policy', (_, decision, type) => this.#decidePolicy(decision, type))
         const shareAction = new Gio.SimpleAction({ name: 'share-selection' })
         shareAction.connect('activate', () => this.#shareSelection())
+        const viewImageAction = new Gio.SimpleAction({
+            name: 'view-image',
+            parameter_type: new GLib.VariantType('s'),
+        })
+        viewImageAction.connect('activate', (_, uri) => this.emit('view-image', uri.unpack()))
         this.connect('context-menu', (_, menu, hit) => {
             // Copy is the only browser action that makes sense in a book
             for (const item of menu.get_items())
@@ -164,6 +172,9 @@ export const BookView = GObject.registerClass({
             if (hit.context_is_selection() && this.#displayed)
                 menu.append(WebKit.ContextMenuItem.new_from_gaction(
                     shareAction, 'Copy Share Image', null))
+            if (hit.context_is_image() && hit.get_image_uri() && this.#displayed)
+                menu.append(WebKit.ContextMenuItem.new_from_gaction(
+                    viewImageAction, 'View Image', new GLib.Variant('s', hit.get_image_uri())))
             return menu.get_n_items() === 0
         })
         this.connect('web-process-terminated', (_, reason) => {
@@ -225,6 +236,12 @@ export const BookView = GObject.registerClass({
     async display(lastLocation) {
         await this.#call('display', lastLocation)
         this.#displayed = true
+    }
+
+    // An image from the book: { data, lineArt }. data is the image file,
+    // base64-encoded; lineArt is whether it's recolored in dark mode.
+    getImage(uri) {
+        return this.#call('getImage', uri)
     }
 
     // Whether the page can render a font family. WebKit's web process reads
@@ -341,6 +358,9 @@ export const BookView = GObject.registerClass({
                 break
             case 'search':
                 this.emit('search-changed', message)
+                break
+            case 'view-image':
+                this.emit('view-image', message.uri)
                 break
             case 'pull':
                 this.emit('pull', message)

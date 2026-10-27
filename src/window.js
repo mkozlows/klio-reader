@@ -8,6 +8,7 @@ import Adw from 'gi://Adw?version=1'
 
 import { APP_ID, APP_NAME } from './config.js'
 import { BookView } from './book-view.js'
+import { ImageView } from './image-view.js'
 import { DEBUG, debug } from './log.js'
 import { TocView } from './toc-view.js'
 import { renderQuoteImage } from './share-image.js'
@@ -21,6 +22,20 @@ const COLORS = {
     light: { bg: '#ffffff', fg: '#1f1f23' },
     dark: { bg: '#1d1d20', fg: '#e0e0e2' },
 }
+
+// Line art in the image view is recolored in dark mode, as in the book (see
+// `lineArtFilter` in reader/reader.js). The image view adds the class only in
+// dark mode.
+const LINE_ART_CSS = (() => {
+    const level = color => [1, 3, 5]
+        .reduce((sum, i) => sum + parseInt(color.slice(i, i + 2), 16), 0) / 765
+    const paper = level(COLORS.dark.bg)
+    const ink = level(COLORS.dark.fg)
+    return `image-view picture.line-art {
+        filter: invert(${ink / (ink + paper)}) brightness(${ink + paper});
+    }`
+})()
+let lineArtCssLoaded = false
 
 // Keys for turning pages while the book has focus. These are handled in the
 // capture phase, before WebKit sees them.
@@ -135,6 +150,8 @@ export const ReaderWindow = GObject.registerClass({
     file = null
     #bookKey = null
     #book = null // { title, author } of the book showing
+    #imageView = new ImageView({ css_classes: ['view'] })
+    #canGoBack = false
     #font = null // the custom font last applied, if any
     #defaultFont = null // the default font last applied
     #bookView = new BookView()
@@ -220,8 +237,10 @@ export const ReaderWindow = GObject.registerClass({
         })
         this.#bookView.connect('zoom', (_, dir) =>
             this.application.setTextScale(this.application.textScale + dir * 0.1))
+        this.#bookView.connect('view-image', (_, uri) => this.#viewImage(uri))
         this.#bookView.connect('history-changed', (_, canGoBack, canGoForward) => {
-            this.lookup_action('back').enabled = canGoBack
+            this.#canGoBack = canGoBack
+            this.lookup_action('back').enabled = canGoBack || this.#viewingImage
             this.lookup_action('forward').enabled = canGoForward
         })
         this.connect('close-request', () => {
@@ -311,6 +330,15 @@ export const ReaderWindow = GObject.registerClass({
         this.#stack.add_named(emptyPage, 'empty')
         this.#stack.add_named(bookPage, 'book')
         this.#stack.add_named(this.#errorPage, 'error')
+        this.#stack.add_named(this.#imageView, 'image')
+        this.#imageView.connect('close', () => this.#closeImage())
+        if (!lineArtCssLoaded) {
+            lineArtCssLoaded = true
+            const provider = new Gtk.CssProvider()
+            provider.load_from_string(LINE_ART_CSS)
+            Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(),
+                provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        }
         this.#toastOverlay.child = this.#stack
 
         this.#contentToolbar = new Adw.ToolbarView({
@@ -421,7 +449,7 @@ export const ReaderWindow = GObject.registerClass({
         const actions = {
             'open': () => this.#chooseFile(),
             'close': () => this.close(),
-            'back': () => this.#bookView.back(),
+            'back': () => this.#viewingImage ? this.#closeImage() : this.#bookView.back(),
             'forward': () => this.#bookView.forward(),
             'text-larger': () => this.application.setTextScale(this.application.textScale + 0.1),
             'text-smaller': () => this.application.setTextScale(this.application.textScale - 0.1),
@@ -498,6 +526,32 @@ export const ReaderWindow = GObject.registerClass({
     }
 
     #updateAppearance = () => {}
+
+    get #viewingImage() {
+        return this.#stack.visible_child_name === 'image'
+    }
+
+    // Show an image from the book in place of the book, until it's closed
+    async #viewImage(uri) {
+        try {
+            const { data, lineArt } = await this.#bookView.getImage(uri)
+            const texture = Gdk.Texture.new_from_bytes(new GLib.Bytes(GLib.base64_decode(data)))
+            this.#imageView.show(texture, { lineArt })
+            this.#stack.visible_child_name = 'image'
+            this.#imageView.grab_focus()
+            this.lookup_action('back').enabled = true
+        } catch (e) {
+            console.warn(`Could not show image: ${e.message}`)
+            this.#toastOverlay.add_toast(new Adw.Toast({ title: 'Can’t show this image' }))
+        }
+    }
+
+    #closeImage() {
+        this.#stack.visible_child_name = 'book'
+        this.#imageView.clear()
+        this.lookup_action('back').enabled = this.#canGoBack
+        this.#bookView.grab_focus()
+    }
 
     // Put an image of the passage, set as a quote, on the clipboard
     #copyShareImage(paragraphs) {
@@ -596,6 +650,7 @@ export const ReaderWindow = GObject.registerClass({
         this.title = file.get_basename()
         this.#spinner.visible = true
         this.#stack.visible_child_name = 'book'
+        this.#imageView.clear()
 
         try {
             const book = await this.#bookView.open(file)

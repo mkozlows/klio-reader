@@ -10,6 +10,7 @@ install_data(
   'state.js',
   'preferences.js',
   'share-image.js',
+  'image-view.js',
   'log.js',
   install_dir: pkgdatadir,
 )
