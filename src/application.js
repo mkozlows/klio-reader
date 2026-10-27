@@ -66,6 +66,13 @@ const CSS = `
     padding: 6px 12px;
     border-radius: 999px;
 }
+.pull-osd {
+    padding: 9px 15px;
+    border-radius: 12px;
+}
+.pull-osd progressbar {
+    min-width: 160px;
+}
 
 /* Style switcher in the main menu, after GNOME Text Editor's */
 .style-switcher {
@@ -221,16 +228,19 @@ export const Application = GObject.registerClass({
             if (window instanceof ReaderWindow) window.setTextScale(scale)
     }
 
-    // Overrides for the book's own styles, as set in Preferences
+    // The default font and overrides for the book's own styles, as set in
+    // Preferences
     get textStyle() {
         return {
+            defaultFont: state.get('defaultFont'),
             font: state.get('customFont') ? state.get('fontFamily') : null,
             overrideSize: state.get('overrideFontSize'),
             align: state.get('textAlign'),
         }
     }
 
-    // changes: any of customFont, fontFamily, overrideFontSize, textAlign
+    // changes: any of defaultFont, customFont, fontFamily, overrideFontSize,
+    // textAlign
     setTextStyle(changes) {
         for (const [key, value] of Object.entries(changes)) state.set(key, value)
         for (const window of this.get_windows())

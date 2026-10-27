@@ -8,6 +8,7 @@ import Adw from 'gi://Adw?version=1'
 
 import { APP_ID, APP_NAME } from './config.js'
 import { BookView } from './book-view.js'
+import { DEBUG, debug } from './log.js'
 import { TocView } from './toc-view.js'
 import { renderQuoteImage } from './share-image.js'
 import { state } from './state.js'
@@ -135,6 +136,7 @@ export const ReaderWindow = GObject.registerClass({
     #bookKey = null
     #book = null // { title, author } of the book showing
     #font = null // the custom font last applied, if any
+    #defaultFont = null // the default font last applied
     #bookView = new BookView()
     #tocView = new TocView()
     #title = new Adw.WindowTitle({ title: APP_NAME })
@@ -153,6 +155,17 @@ export const ReaderWindow = GObject.registerClass({
         can_target: false,
     })
     #progressOsdTimeout = 0
+    // Shown while pulling past the edge of a chapter in scrolled mode
+    #pullIcon = new Gtk.Image({ icon_name: 'go-down-symbolic' })
+    #pullLabel = new Gtk.Label({ ellipsize: Pango.EllipsizeMode.END, max_width_chars: 40 })
+    #pullBar = new Gtk.ProgressBar()
+    #pullOsd = new Gtk.Revealer({
+        transition_type: Gtk.RevealerTransitionType.CROSSFADE,
+        halign: Gtk.Align.CENTER,
+        valign: Gtk.Align.END,
+        margin_bottom: 12,
+        can_target: false,
+    })
     #errorPage = new Adw.StatusPage({ icon_name: 'dialog-error-symbolic', title: 'Unable to Open Book' })
     #splitView
     #contentToolbar
@@ -185,6 +198,7 @@ export const ReaderWindow = GObject.registerClass({
         this.#setupDragAndDrop()
 
         this.#tocView.connect('navigate', (_, href) => {
+            debug(`contents: ${href}`)
             this.#bookView.goTo(href)
             if (this.#splitView.collapsed) this.#splitView.show_sidebar = false
             this.#bookView.grab_focus()
@@ -192,11 +206,18 @@ export const ReaderWindow = GObject.registerClass({
         this.#bookView.connect('relocate', (_, { cfi, tocId, tocLabel, progress }) => {
             if (this.#bookKey && cfi) state.setPosition(this.#bookKey, cfi)
             this.#tocView.setCurrent(tocId)
-            if (this.#bookView.scrolled && !this.#spinner.visible)
+            if (this.#bookView.scrolled && !this.#spinner.visible && !this.#pullOsd.reveal_child)
                 this.#showProgress(tocLabel ? `${tocLabel} · ${progress}` : progress)
         })
         this.#bookView.connect('share-selection', (_, paragraphs) => this.#copyShareImage(paragraphs))
         this.connect('destroy', () => this.#hideProgress())
+        this.#bookView.connect('pull', (_, { fraction, label }) => {
+            this.#pullOsd.reveal_child = fraction > 0
+            if (!fraction) return
+            this.#hideProgress()
+            this.#pullLabel.label = label || 'Next'
+            this.#pullBar.fraction = fraction
+        })
         this.#bookView.connect('zoom', (_, dir) =>
             this.application.setTextScale(this.application.textScale + dir * 0.1))
         this.#bookView.connect('history-changed', (_, canGoBack, canGoForward) => {
@@ -275,6 +296,18 @@ export const ReaderWindow = GObject.registerClass({
         progressBox.append(this.#progressLabel)
         this.#progressOsd.child = progressBox
         bookPage.add_overlay(this.#progressOsd)
+        const pullRow = new Gtk.Box({ spacing: 6, halign: Gtk.Align.CENTER })
+        pullRow.append(this.#pullIcon)
+        pullRow.append(this.#pullLabel)
+        const pullBox = new Gtk.Box({
+            orientation: Gtk.Orientation.VERTICAL,
+            spacing: 6,
+            css_classes: ['osd', 'pull-osd'],
+        })
+        pullBox.append(pullRow)
+        pullBox.append(this.#pullBar)
+        this.#pullOsd.child = pullBox
+        bookPage.add_overlay(this.#pullOsd)
         this.#stack.add_named(emptyPage, 'empty')
         this.#stack.add_named(bookPage, 'book')
         this.#stack.add_named(this.#errorPage, 'error')
@@ -407,6 +440,12 @@ export const ReaderWindow = GObject.registerClass({
             action.connect('activate', activate)
             this.add_action(action)
         }
+        if (DEBUG) {
+            const action = new Gio.SimpleAction({ name: 'log-state' })
+            action.connect('activate', () => this.#bookView.logState())
+            this.add_action(action)
+            this.application.set_accels_for_action('win.log-state', ['<Control><Shift>d'])
+        }
 
         const sidebar = Gio.SimpleAction.new_stateful('toggle-sidebar', null,
             GLib.Variant.new_boolean(false))
@@ -466,7 +505,7 @@ export const ReaderWindow = GObject.registerClass({
             paragraphs,
             title: this.#book?.title ?? '',
             author: this.#book?.author ?? '',
-            font: this.#font ?? 'Serif',
+            font: this.#defaultFont ?? 'Serif',
         })
         // Offered as PNG data. Offering the texture itself leaves it to GTK to
         // convert, and it can't convert the GPU texture the renderer makes.
@@ -476,15 +515,19 @@ export const ReaderWindow = GObject.registerClass({
     }
 
     async setTextStyle(style) {
-        const fontChanged = style.font !== this.#font
+        const newFonts = [style.font, style.defaultFont]
+            .filter(font => font && font !== this.#font && font !== this.#defaultFont)
         this.#font = style.font
+        this.#defaultFont = style.defaultFont
         this.#bookView.setLayout(style)
         // A font installed while the app is running is new to the book's web
         // process, which then needs replacing
-        if (!fontChanged || !style.font || !this.#bookKey) return
+        if (!newFonts.length || !this.#bookKey) return
         const file = this.file
-        const hasFont = await this.#bookView.hasFont(style.font).catch(() => true)
-        if (hasFont || this.file !== file || this.#font !== style.font) return
+        const hasFonts = await Promise.all(newFonts.map(font =>
+            this.#bookView.hasFont(font).catch(() => true)))
+        if (hasFonts.every(Boolean) || this.file !== file
+            || this.#font !== style.font || this.#defaultFont !== style.defaultFont) return
         this.#bookView.restartWebProcess()
         this.openFile(file)
     }
@@ -524,6 +567,7 @@ export const ReaderWindow = GObject.registerClass({
         target.connect('drop', (_, file) => {
             // ignore drags from inside the book, like an image being dragged
             if (target.current_drop.get_drag()) return false
+            debug(`dropped: ${file.get_uri()}`)
             this.openFile(file)
             return true
         })
@@ -540,6 +584,7 @@ export const ReaderWindow = GObject.registerClass({
     }
 
     async openFile(file) {
+        debug(`opening ${file.get_uri()}`)
         this.file = file
         this.#bookKey = null
         this.#book = null

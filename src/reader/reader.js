@@ -10,6 +10,16 @@ import * as CFI from '../foliate-js/epubcfi.js'
 const post = message =>
     globalThis.webkit.messageHandlers.reader.postMessage(JSON.stringify(message))
 
+// Verbose logging, on when the GTK side sets readerDebug (READER_DEBUG).
+// WebKit writes console messages to stderr.
+const timestamp = () => {
+    const now = new Date()
+    return `${now.toTimeString().slice(0, 8)}.${String(now.getMilliseconds()).padStart(3, '0')}`
+}
+const debug = globalThis.readerDebug
+    ? (...args) => console.log(`[page ${timestamp()}]`, ...args)
+    : () => {}
+
 // Line length cap at 100% text size. It grows with the text size, so lines
 // hold about the same number of characters at any size (window permitting).
 const MAX_INLINE_SIZE = 720
@@ -21,11 +31,22 @@ const LAYOUT = {
     'max-column-count': '1',
 }
 
-// In scrolled mode, how far the reader has to keep scrolling past the end (or
-// start) of a chapter before moving on to the next (or previous) one, in
-// pixels. The pull resets if they stop scrolling for OVERSCROLL_RESET_MS.
-const OVERSCROLL_THRESHOLD = 200
-const OVERSCROLL_RESET_MS = 400
+// In scrolled mode, scrolling up at the start of a chapter goes straight to
+// the previous one. Scrolling down at the end goes on to the next, but first
+// the end of the chapter scrolls up the window, over blank space (the
+// runout) as long as the chapter runs past one window, up to half a window.
+// So nothing is missed, and a section that fits in the window takes a single
+// notch of the wheel. Going back lands at the bottom of the runout, so going
+// forward again takes a single notch too. Only scrolling that starts at the
+// bottom counts, so the scroll that gets there never carries on into the
+// next chapter. How far into the runout the reader is shows in GTK.
+const RUNOUT = '--reader-runout'
+const PIXELS_PER_NOTCH = 70 // as PIXELS_PER_WHEEL_STEP in book-view.js
+// Scroll events closer together than this are one scroll: a spin of the
+// wheel, or a swipe on a touchpad
+const SCROLL_GAP_MS = 250
+// After moving to another chapter, scrolling is ignored for this long
+const CHAPTER_CHANGE_PAUSE_MS = 400
 
 // Find: every match is highlighted; the current one in a stronger color
 const SEARCH_HIGHLIGHT = '#f6d32d'
@@ -79,7 +100,13 @@ const MONOSPACE = 'pre, code, kbd, samp, tt'
 //   font: font family to use instead of the book's, or null
 //   overrideSize: show body text at the default size, whatever the book says
 //   align: 'publisher', 'justify', or 'start'
-const getCSS = ({ dark, bg, fg, link }, { font, overrideSize, align, textScale }) => [`
+// In scrolled mode, images are kept short enough to see whole, so a cover or
+// a full-page illustration fits in the window. This holds the height they
+// have room for; foliate-js does the same itself for pages.
+const IMAGE_HEIGHT = '--reader-image-height'
+const MEDIA = 'img, svg, video'
+
+const getCSS = ({ dark, bg, fg, link }, { font, overrideSize, align, textScale, scrolled }) => [`
     @namespace epub "http://www.idpf.org/2007/ops";
     html {
         color-scheme: ${dark ? 'dark' : 'light'};
@@ -111,6 +138,13 @@ const getCSS = ({ dark, bg, fg, link }, { font, overrideSize, align, textScale }
         white-space: pre-wrap !important;
         tab-size: 2;
     }
+    ${scrolled ? `
+    body::after {
+        content: '' !important;
+        display: block !important;
+        clear: both !important;
+        height: var(${RUNOUT}, 0) !important;
+    }` : ''}
 `, `
     ${dark ? `
     html, body {
@@ -145,6 +179,44 @@ const getCSS = ({ dark, bg, fg, link }, { font, overrideSize, align, textScale }
         font-size: 1rem !important;
     }` : ''}
 `]
+
+// In scrolled mode a section's frame is as tall as its content, so vh units,
+// which books use to mean the window's height, would size things relative to
+// themselves: an image set to 99vh would shrink forever. They're rewritten to
+// use VH, which holds 1% of the window's height in scrolled mode.
+const VH = '--reader-vh'
+const VH_UNITS = /(-?\d*\.?\d+)[dsl]?vh\b/g
+const fixViewportUnits = doc => {
+    const fixStyle = style => {
+        for (const name of [...style]) {
+            const value = style.getPropertyValue(name)
+            if (!value.includes('vh')) continue
+            style.setProperty(name, value.replace(VH_UNITS, `calc($1 * var(${VH}, 1vh))`),
+                style.getPropertyPriority(name))
+        }
+    }
+    const fixRules = rules => {
+        for (const rule of rules) {
+            if (rule.style) fixStyle(rule.style)
+            if (rule.cssRules) fixRules(rule.cssRules)
+        }
+    }
+    for (const sheet of doc.styleSheets) {
+        try {
+            fixRules(sheet.cssRules)
+        } catch (e) {
+            debug(`could not read a stylesheet: ${e}`)
+        }
+    }
+    for (const el of doc.querySelectorAll('[style*="vh"]')) fixStyle(el.style)
+}
+
+// Calibre's cover pages stretch the cover to fill an SVG the size of the page,
+// which distorts it when the page isn't the cover's shape. Fit it instead.
+const unstretchImages = doc => {
+    for (const svg of doc.querySelectorAll('svg[preserveAspectRatio="none"]'))
+        if (svg.querySelector('image')) svg.setAttribute('preserveAspectRatio', 'xMidYMid meet')
+}
 
 // Mark the paragraphs that the book aligns as ordinary running text (justified
 // or ragged), so the alignment setting can override just those, and not, say,
@@ -238,9 +310,13 @@ class Reader {
     }
     #title = ''
     #tocIds = new Map()
-    #overscroll = 0
-    #overscrollTimer
+    #pullShown = 0 // how far into the runout the reader is, last shown in GTK
     #overscrollLocked = false
+    #scrollStart = 0 // when the current scroll began
+    #lastScrollTime = 0
+    #lastScrollDir = 0
+    #edgeSince = new Map() // direction (1, -1) → when that edge came into view
+    #sectionLabels = new Map() // section index → label of its first TOC item
     #searchToken = 0
     #searchTask = Promise.resolve()
     #searchResults = []
@@ -268,6 +344,8 @@ class Reader {
         renderer.setAttribute('animated', '')
         this.#applyAppearance()
         this.#handleEvents()
+
+        this.#labelSections(book.toc ?? [])
 
         const metadata = book.metadata ?? {}
         this.#title = formatLanguageMap(metadata.title)
@@ -302,6 +380,11 @@ class Reader {
         renderer.setAttribute('flow', scrolled ? 'scrolled' : 'paginated')
         renderer.setAttribute('max-inline-size', `${Math.round(MAX_INLINE_SIZE * textScale)}px`)
         renderer.setStyles?.(getCSS(this.#appearance, this.#layout))
+        // once the section is laid out for the new flow
+        requestAnimationFrame(() => {
+            this.#fitAllToWindow()
+            this.#showPull()
+        })
     }
 
     // Search the whole book, sending { type: 'search' } messages as results
@@ -379,6 +462,41 @@ class Reader {
     }
 
     // Up/Down: a few lines when scrolling, a whole page when paginated
+    // Next (dir 1) or previous (-1) page, or in scrolled mode, scroll by
+    // `distance` or a screenful. In scrolled mode, foliate-js locks up for
+    // good (no more turning pages or going to chapters) if asked to go past
+    // the first or last section, so it isn't asked.
+    async turn(dir, distance) {
+        const { renderer } = this.view
+        if (renderer.scrolled && this.#atEdge(dir) && this.#adjacentSection(dir) == null) {
+            debug(`turn ignored: no section ${dir > 0 ? 'after' : 'before'} this one`)
+            return
+        }
+        await (dir > 0 ? this.view.next(distance) : this.view.prev(distance))
+    }
+
+    // The next (dir 1) or previous (-1) section in reading order, if any
+    #adjacentSection(dir) {
+        const { renderer, book } = this.view
+        let index = (renderer.getContents()[0]?.index ?? -1) + dir
+        while (book.sections[index]?.linear === 'no') index += dir
+        return book.sections[index] ? index : null
+    }
+
+    // Whether the end (dir 1) or start (-1) of the section is in view
+    #atEdge(dir) {
+        const { renderer } = this.view
+        return dir > 0 ? renderer.viewSize - renderer.end <= 2 : renderer.start <= 0
+    }
+
+    // Note when each edge of the section came into view
+    #updateEdges() {
+        const now = performance.now()
+        for (const dir of [1, -1])
+            this.#edgeSince.set(dir, this.view.renderer.scrolled && this.#atEdge(dir)
+                ? this.#edgeSince.get(dir) ?? now : null)
+    }
+
     async scrollLines(dir) {
         const { renderer } = this.view
         let distance
@@ -388,35 +506,54 @@ class Reader {
             const lineHeight = parseFloat(style?.lineHeight) || 1.5 * parseFloat(style?.fontSize) || 24
             distance = 3 * lineHeight
         }
-        await (dir > 0 ? this.view.next(distance) : this.view.prev(distance))
+        await this.turn(dir, distance)
     }
 
     // Called for every wheel/touchpad scroll in scrolled mode (WebKit does the
-    // actual scrolling). Pulling past the edge of a chapter moves to the next.
+    // actual scrolling). Scrolling past the edge of a chapter moves on.
     async overscroll(delta) {
         const { renderer } = this.view
-        if (!renderer.scrolled || this.#overscrollLocked || !delta) return
-        const atEdge = delta > 0
-            ? renderer.viewSize - renderer.end <= 2
-            : renderer.start <= 0
-        if (!atEdge || Math.sign(delta) !== Math.sign(this.#overscroll))
-            this.#overscroll = 0
-        if (!atEdge) return
-        this.#overscroll += delta
-        clearTimeout(this.#overscrollTimer)
-        this.#overscrollTimer = setTimeout(() => this.#overscroll = 0, OVERSCROLL_RESET_MS)
-        if (Math.abs(this.#overscroll) < OVERSCROLL_THRESHOLD) return
+        if (!renderer.scrolled || !delta) return
+        const now = performance.now()
+        const dir = Math.sign(delta)
+        if (now - this.#lastScrollTime > SCROLL_GAP_MS || dir !== this.#lastScrollDir)
+            this.#scrollStart = now
+        this.#lastScrollTime = now
+        this.#lastScrollDir = dir
+        if (this.#overscrollLocked) return
 
-        // Next/prev at a chapter edge goes to the adjacent chapter. Ignore
-        // scrolling for a moment afterwards, so a long spin of the wheel
-        // doesn't skip through several short chapters.
-        this.#overscroll = 0
-        this.#overscrollLocked = true
-        try {
-            await (delta > 0 ? this.view.next() : this.view.prev())
-        } finally {
-            setTimeout(() => this.#overscrollLocked = false, OVERSCROLL_RESET_MS)
+        this.#updateEdges()
+        const edgeSince = this.#edgeSince.get(dir)
+        if (edgeSince == null || this.#adjacentSection(dir) == null) return
+        if (dir > 0 && edgeSince >= this.#scrollStart) {
+            debug('overscroll ignored: this scroll reached the end')
+            return
         }
+        this.#overscrollLocked = true
+        debug(`overscroll: going ${dir > 0 ? 'forward' : 'back'}`)
+        try {
+            await this.turn(dir)
+            debug(`overscroll: now at section ${renderer.getContents()[0]?.index}`)
+        } finally {
+            setTimeout(() => this.#overscrollLocked = false, CHAPTER_CHANGE_PAUSE_MS)
+        }
+    }
+
+    // Show in GTK how far into the runout the reader has scrolled
+    #showPull() {
+        const { renderer } = this.view
+        const doc = renderer.scrolled ? renderer.getContents()[0]?.doc : null
+        const runout = parseFloat(doc?.documentElement.style.getPropertyValue(RUNOUT)) || 0
+        const fraction = runout
+            ? Math.max(0, Math.min(1, (renderer.end - (renderer.viewSize - runout)) / runout))
+            : 0
+        if (fraction === this.#pullShown) return
+        this.#pullShown = fraction
+        post({
+            type: 'pull',
+            fraction,
+            label: fraction ? this.#sectionLabels.get(this.#adjacentSection(1)) ?? '' : '',
+        })
     }
 
     #applyAppearance() {
@@ -433,6 +570,16 @@ class Reader {
 
     // TOC items get numeric ids so the GTK side can match `relocate` events
     // to rows unambiguously (hrefs aren't unique).
+    #labelSections(items) {
+        for (const item of items) {
+            const index = item.href ? this.view.resolveNavigation(item.href)?.index : null
+            const label = item.label?.trim()
+            if (index != null && label && !this.#sectionLabels.has(index))
+                this.#sectionLabels.set(index, label)
+            this.#labelSections(item.subitems ?? [])
+        }
+    }
+
     #serializeTOC(items) {
         return items.map(item => {
             const id = this.#tocIds.size
@@ -446,9 +593,75 @@ class Reader {
         })
     }
 
+    // In scrolled mode, size a section's images and vh units by the height of
+    // the window, less the margins above and below a section. A section
+    // that's just an image, like a cover, fits whole.
+    #fitToWindow(doc, index) {
+        const { renderer } = this.view
+        const { style } = doc.documentElement
+        if (!renderer.scrolled || !doc.body) {
+            style.removeProperty(VH)
+            style.removeProperty(RUNOUT)
+            return
+        }
+        const room = Math.floor(
+            renderer.getBoundingClientRect().height - 2 * parseFloat(LAYOUT.margin))
+        style.setProperty(VH, `${room / 100}px`)
+        style.removeProperty(RUNOUT)
+        this.#fitImages(doc, room)
+
+        // The runout: as far as the section runs past the window, up to half
+        // the window, unless that's within a notch or this is the last section
+        const overflow = doc.documentElement.getBoundingClientRect().height - room
+        const { sections } = this.view.book
+        let next = index + 1
+        while (sections[next]?.linear === 'no') next++
+        if (overflow > PIXELS_PER_NOTCH && sections[next])
+            style.setProperty(RUNOUT, `${Math.floor(Math.min(renderer.size / 2, overflow))}px`)
+    }
+
+    #fitImages(doc, room) {
+        const { style } = doc.documentElement
+        style.setProperty(IMAGE_HEIGHT, `${room}px`)
+        // on the elements, to replace the limit foliate-js sets for pages
+        for (const el of doc.body.querySelectorAll(MEDIA))
+            el.style.setProperty('max-height', `var(${IMAGE_HEIGHT})`, 'important')
+        const images = doc.body.querySelectorAll('img, svg')
+        if (images.length !== 1 || doc.body.innerText.trim()) return
+        // Shrink the image by however much the section is too tall. It can
+        // take a couple of tries, as the space around it can change too.
+        let height = room
+        for (let i = 0; i < 3; i++) {
+            const excess = doc.documentElement.getBoundingClientRect().height - room
+            if (Math.abs(excess) < 1) break
+            height = Math.min(room, Math.floor(height - excess))
+            style.setProperty(IMAGE_HEIGHT, `${height}px`)
+        }
+    }
+
+    #fitAllToWindow() {
+        for (const { doc, index } of this.view.renderer.getContents()) this.#fitToWindow(doc, index)
+    }
+
     #handleEvents() {
         const { view } = this
+        addEventListener('resize', () => this.#fitAllToWindow())
+        view.renderer.addEventListener('scroll', () => {
+            this.#updateEdges()
+            this.#showPull()
+        })
         view.addEventListener('load', ({ detail }) => {
+            debug(`loaded section ${detail.index}`)
+            // again once foliate-js has laid the section out
+            fixViewportUnits(detail.doc)
+            unstretchImages(detail.doc)
+            this.#fitToWindow(detail.doc, detail.index)
+            this.#edgeSince.clear()
+            requestAnimationFrame(() => {
+                this.#fitToWindow(detail.doc, detail.index)
+                this.#updateEdges()
+                this.#showPull()
+            })
             markAlignable(detail.doc)
             blockDragging(detail.doc)
         })
@@ -474,6 +687,7 @@ class Reader {
             post({ type: 'external-link', href: e.detail.href_ })
         })
         view.addEventListener('link', e => {
+            debug(`link: ${e.detail.href}`)
             // Hand foliate-js the superscript around the link, which it might
             // not find itself
             const { a, href } = e.detail
@@ -522,6 +736,7 @@ class Reader {
             dialog.dataset.href = href
             dialog.querySelector('header').innerText = NOTE_TITLES[type] ?? 'Note'
             dialog.querySelector('[value="go"]').hidden = hidden
+            debug(`popup open: ${href}`)
             dialog.showModal()
             post({ type: 'dialog', open: true })
         })
@@ -539,7 +754,21 @@ class Reader {
         return []
     }
 
+    // For logging, when something's stuck
+    debugState() {
+        const renderer = this.view?.renderer
+        return {
+            section: renderer?.getContents()[0]?.index ?? null,
+            scrolled: renderer?.scrolled ?? null,
+            start: renderer?.start, end: renderer?.end, viewSize: renderer?.viewSize,
+            pull: this.#pullShown,
+            overscrollLocked: this.#overscrollLocked,
+            popupOpen: dialog.open,
+        }
+    }
+
     onDialogClose() {
+        debug('popup closed')
         post({ type: 'dialog', open: false })
         const noteView = dialog.querySelector('foliate-view')
         noteView?.close()
@@ -556,15 +785,16 @@ dialog.addEventListener('click', e => e.target === dialog ? dialog.close() : nul
 
 globalThis.api = {
     hasFont,
+    debugState: () => reader.debugState(),
     getSelection: () => reader.getSelection(),
     open: (url, layout) => reader.open(url, layout),
     display: lastLocation => reader.display(lastLocation),
     setAppearance: appearance => reader.setAppearance(appearance),
     setLayout: layout => reader.setLayout(layout),
-    next: async () => void await reader.view.next(),
-    prev: async () => void await reader.view.prev(),
-    goLeft: async () => void await reader.view.goLeft(),
-    goRight: async () => void await reader.view.goRight(),
+    next: async () => void await reader.turn(1),
+    prev: async () => void await reader.turn(-1),
+    goLeft: async () => void await reader.turn(reader.view.book.dir === 'rtl' ? 1 : -1),
+    goRight: async () => void await reader.turn(reader.view.book.dir === 'rtl' ? -1 : 1),
     goTo: async href => void await reader.view.goTo(href),
     scrollLines: async dir => void await reader.scrollLines(dir),
     overscroll: async delta => void await reader.overscroll(delta),
