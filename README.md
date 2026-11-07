@@ -3,6 +3,8 @@
 A simple EPUB viewer for GNOME. You open a book file and read it. It has no
 library and nothing to import or organize.
 
+<img width="1984" height="1538" alt="image" src="https://github.com/user-attachments/assets/17802ddc-a197-4841-85ce-9edb69e3216b" />
+
 Built with GTK 4, libadwaita, and WebKitGTK. Book rendering is handled by
 [foliate-js](https://github.com/johnfactotum/foliate-js), the engine from
 [Foliate](https://johnfactotum.github.io/foliate/).
